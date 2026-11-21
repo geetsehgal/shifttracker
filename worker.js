@@ -1,4 +1,4 @@
-// Shift tracker sync API. Needs a D1 binding named DB (see schema.sql).
+//  tracker sync API. Needs a D1 binding named DB (see schema.sql).
 // Any path other than /sync is served from the static assets in ./public.
 const CORS = {
   'Access-Control-Allow-Origin': '*',
