@@ -23,7 +23,8 @@ button.stop{background:var(--bad);border-color:var(--bad);color:#fff}
 .tiles{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:12px}
 .tile{background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:10px}
 .tile b{display:block;font-size:21px;font-variant-numeric:tabular-nums}
-.tile.bad b{color:var(--bad)}
+.tile.bad b{color:var(--bad)}.tile.ok b{color:var(--ok)}
+.col i.ok{background:var(--ok)}.col i.low{background:var(--bad)}
 .banner{display:flex;justify-content:space-between;align-items:center;gap:10px;background:var(--acbg);border:1px solid var(--ac);border-radius:10px;padding:10px 12px;margin-bottom:12px}
 .banner.over{background:var(--badbg);border-color:var(--bad)}
 .banner b{font-variant-numeric:tabular-nums}
@@ -69,11 +70,12 @@ td.bad{color:var(--bad);font-weight:600}
 
 <section id="today">
   <div class="tiles">
+    <div class="tile" id="tileUtil"><span class="mu">Utilisation</span><b id="tUtil">–</b></div>
+    <div class="tile" id="tileLeak"><span class="mu">Leak used</span><b id="tLeak">0:00</b></div>
+    <div class="tile" id="tileBud"><span class="mu">Budget left</span><b id="tBud">0:00</b></div>
     <div class="tile"><span class="mu">Shift time</span><b id="tShift">0:00</b></div>
-    <div class="tile"><span class="mu">Aux time</span><b id="tAux">0:00</b></div>
-    <div class="tile" id="tileOver"><span class="mu">Overboard</span><b id="tOver">0:00</b></div>
-    <div class="tile"><span class="mu">Utilisation</span><b id="tUtil">–</b></div>
   </div>
+  <p class="mu" id="tgt" style="margin:-4px 0 12px"></p>
   <div id="banner" class="banner hide"><div>On <b id="bName"></b> <span id="bTime"></span></div><button class="stop" id="bStop">Back to work</button></div>
 
   <div class="sec">Approved auxes</div>
@@ -104,36 +106,44 @@ td.bad{color:var(--bad);font-weight:600}
   <div class="ctl">
     <label>Show <select id="range"><option value="7">last 7 days</option><option value="30" selected>last 30 days</option><option value="9999">all saved</option></select></label>
     <label>Keep data for <select id="keep"><option value="7">1 week</option><option value="30">1 month</option><option value="90">3 months</option><option value="365">1 year</option></select></label>
+    <label>Target % <input id="cfgT" type="number" min="1" max="100" step="1" style="min-width:70px;max-width:90px"></label>
+    <label>Shift hrs <input id="cfgS" type="number" min="1" max="16" step="0.25" style="min-width:70px;max-width:90px"></label>
     <button id="csv">Export CSV</button>
     <button id="wipe">Clear all</button>
   </div>
   <div class="sec">Utilisation by day</div>
+  <p id="summary" class="mu" style="margin:0 0 8px"></p>
   <div class="chart" id="chart"></div>
   <div class="sec">Aux usage over the period</div>
   <div class="wrap"><table id="auxTbl"></table></div>
   <div class="sec">Day by day</div>
   <div class="wrap"><table id="dayTbl"></table></div>
-  <p class="mu">Utilisation = (shift time − all aux time) ÷ shift time. Overboard = time past approved allowances + all extra time. Data is saved in this browser only.</p>
+  <p class="mu">Available time = time between Start and End shift, minus Break 1, Break 2 and Lunch (up to their allowances). Leak = Busy-admin + Busy-away + Extra time + time past the Break/Lunch allowances. Meetings count as productive; Pre-shift is outside the shift. Utilisation = (available − leak) ÷ available.</p>
 </section>
 
 <script type="module">
-/* ---- Sync: paste your Cloudflare Worker URL (no trailing slash), e.g. https://shift-sync.yourname.workers.dev ---- */
+/* ---- Sync: your Cloudflare Worker URL (no trailing slash) ---- */
 const SYNC_URL="https://shifttracker.geetsehgal.workers.dev";
 const KEY='shiftAuxTracker.v1';
 const AUX=[
- {id:'b1',name:'Break 1',allow:15,type:'approved'},
- {id:'b2',name:'Break 2',allow:15,type:'approved'},
- {id:'meal',name:'Meal / Lunch',allow:30,type:'approved'},
- {id:'pre',name:'Pre-shift',allow:30,type:'approved'},
- {id:'meet',name:'Meeting',type:'adhoc'},
- {id:'admin',name:'Busy-admin',type:'adhoc'},
- {id:'away',name:'Busy-away',type:'adhoc'},
- {id:'extra',name:'Extra time',type:'extra'}
+ {id:'b1',name:'Break 1',allow:15,type:'approved',tag:'15 min'},
+ {id:'b2',name:'Break 2',allow:15,type:'approved',tag:'15 min'},
+ {id:'meal',name:'Meal / Lunch',allow:30,type:'approved',tag:'30 min'},
+ {id:'pre',name:'Pre-shift',allow:30,type:'approved',out:true,tag:'30 min, before shift'},
+ {id:'meet',name:'Meeting',type:'adhoc',tag:'counts as productive'},
+ {id:'admin',name:'Busy-admin',type:'adhoc',leak:true,tag:'counts as leak'},
+ {id:'away',name:'Busy-away',type:'adhoc',leak:true,tag:'counts as leak'},
+ {id:'extra',name:'Extra time',type:'extra',leak:true}
 ];
 const $=id=>document.getElementById(id);
 const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 let db=load();
-function load(){try{const d=JSON.parse(localStorage.getItem(KEY));if(d&&d.days)return d}catch(e){}return{days:{},active:null,keep:30}}
+function load(){
+  let d=null;try{d=JSON.parse(localStorage.getItem(KEY))}catch(e){}
+  if(!d||!d.days)d={days:{},active:null,keep:30};
+  d.cfg=Object.assign({target:90,shiftHrs:9.5},d.cfg||{});
+  return d;
+}
 function localSave(){try{localStorage.setItem(KEY,JSON.stringify(db))}catch(e){}}
 function save(days=[],meta=false){
   localSave();
@@ -141,21 +151,36 @@ function save(days=[],meta=false){
   days.forEach(k=>mark('day:'+k));if(meta)mark('meta');
   clearTimeout(tm);tm=setTimeout(flush,400);
 }
+const dk=(t=Date.now())=>{const d=new Date(t);return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0')};
+const day=k=>db.days[k]||(db.days[k]={start:null,end:null,sessions:[]});
+function fmt(s){s=Math.max(0,Math.round(s));const h=Math.floor(s/3600),m=Math.floor(s%3600/60),x=s%60;return h?h+':'+String(m).padStart(2,'0')+':'+String(x).padStart(2,'0'):m+':'+String(x).padStart(2,'0')}
+function mins(s){return Math.round(s/60)}
 function prune(){const cut=Date.now()-db.keep*864e5,rm=[];for(const k in db.days)if(new Date(k+'T23:59:59')<cut){delete db.days[k];rm.push(k)}return rm}
 
 function stats(k,live){
-  const d=db.days[k];const u={};AUX.forEach(a=>u[a.id]=0);
+  const d=db.days[k],now=Date.now();
   const ss=d?[...d.sessions]:[];
-  if(live&&db.active&&db.active.date===k)ss.push({aux:db.active.aux,s:db.active.s,e:Date.now()});
+  if(live&&db.active&&db.active.date===k)ss.push({aux:db.active.aux,s:db.active.s,e:now});
+  const u={},c={};AUX.forEach(a=>{u[a.id]=0;c[a.id]=0});
   ss.forEach(x=>{if(u[x.aux]!==undefined)u[x.aux]+=(x.e-x.s)/1000});
-  let over=0,aux=0;
-  AUX.forEach(a=>{aux+=u[a.id];if(a.type==='approved')over+=Math.max(0,u[a.id]-a.allow*60);if(a.type==='extra')over+=u[a.id]});
-  const first=ss.length?Math.min(...ss.map(x=>x.s)):null;
-  let st=d&&d.start?d.start:first;if(st&&first&&first<st)st=first;
-  const en=d&&d.end?d.end:(k===dk()?Date.now():(ss.length?Math.max(...ss.map(x=>x.e)):null));
+  const inn=ss.filter(x=>x.aux!=='pre');
+  const st=d&&d.start?d.start:(inn.length?Math.min(...inn.map(x=>x.s)):null);
+  const en=d&&d.end?d.end:(k===dk()?now:(inn.length?Math.max(...inn.map(x=>x.e)):null));
+  if(st&&en)ss.forEach(x=>{const a=Math.max(x.s,st),b=Math.min(x.e,en);if(b>a&&c[x.aux]!==undefined)c[x.aux]+=(b-a)/1000});
   const shift=st&&en?Math.max(0,(en-st)/1000):0;
-  return{u,over,aux,shift,util:shift>0?Math.max(0,(shift-aux)/shift*100):null};
+  let appr=0,over=0,leak=0;
+  AUX.forEach(a=>{
+    if(a.out)return;
+    if(a.type==='approved'){appr+=Math.min(c[a.id],a.allow*60);over+=Math.max(0,c[a.id]-a.allow*60)}
+    else if(a.leak)leak+=c[a.id];
+  });
+  leak+=over;
+  const avail=Math.max(0,shift-appr-c.pre);
+  const prod=Math.max(0,avail-leak);
+  return{u,c,shift,avail,prod,leak,over,util:avail>0?prod/avail*100:null};
 }
+const leakOf=(a,x)=>a.out?0:a.type==='approved'?Math.max(0,x-a.allow*60):a.leak?x:0;
+const APPR_SHIFT=AUX.filter(a=>a.type==='approved'&&!a.out).reduce((t,a)=>t+a.allow*60,0);
 
 /* actions */
 function stopAux(){
@@ -170,10 +195,133 @@ function startAux(id){
   $('note').classList.remove('need');
   if(db.active)stopAux();
   const k=dk(),d=day(k);
-  if(!d.start)d.start=Date.now();
-  d.end=null;
+  if(a.id!=='pre'){if(!d.start)d.start=Date.now();d.end=null}
   db.active={aux:id,s:Date.now(),date:k,note:a.type==='extra'?note:''};
   if(a.type==='extra')$('note').value='';
+  save([k],true);renderLog();tick();
+}
+function toggle(id){db.active&&db.active.aux===id?stopAux():startAux(id)}
+$('shiftBtn').onclick=()=>{
+  const k=dk(),d=day(k);
+  if(d.start&&!d.end){stopAux();d.end=Date.now()}
+  else{stopAux();d.start=d.start||Date.now();d.end=null}
+  save([k],true);tick();
+};
+$('bStop').onclick=stopAux;
+$('xBtn').onclick=()=>toggle('extra');
+$('note').oninput=()=>$('note').classList.remove('need');
+
+/* build today's cards once, then update in place */
+function card(a){
+  return `<div class="aux" id="c-${a.id}"><div class="row"><b>${a.name}</b><span class="mu">${a.tag||''}</span></div>
+  <div class="t" id="t-${a.id}"></div><div class="bar"><i id="p-${a.id}"></i></div><button id="b-${a.id}">Start</button></div>`;
+}
+$('gridA').innerHTML=AUX.filter(a=>a.type==='approved').map(card).join('');
+$('gridH').innerHTML=AUX.filter(a=>a.type==='adhoc').map(card).join('');
+AUX.filter(a=>a.type!=='extra').forEach(a=>$('b-'+a.id).onclick=()=>toggle(a.id));
+
+function tick(){
+  const k=dk(),s=stats(k,true),d=db.days[k],act=db.active;
+  $('date').textContent=new Date().toLocaleDateString(undefined,{weekday:'long',day:'numeric',month:'long',year:'numeric'});
+  const open=d&&d.start&&!d.end;
+  $('shiftBtn').textContent=open?'End shift':(d&&d.end?'Resume shift':'Start shift');
+  const cfg=db.cfg,T=cfg.target/100;
+  const planned=cfg.shiftHrs*3600-APPR_SHIFT;
+  const basis=d&&d.end?s.avail:Math.max(planned,s.avail);
+  const left=(1-T)*basis-s.leak;
+  $('tShift').textContent=fmt(s.shift);
+  $('tLeak').textContent=fmt(s.leak);
+  $('tBud').textContent=(left<0?'−':'')+fmt(Math.abs(left));
+  $('tileBud').classList.toggle('bad',left<0);
+  $('tileLeak').classList.toggle('bad',left<0);
+  $('tUtil').textContent=s.util===null?'–':s.util.toFixed(1)+'%';
+  $('tileUtil').classList.toggle('ok',s.util!==null&&s.util>=cfg.target);
+  $('tileUtil').classList.toggle('bad',s.util!==null&&s.util<cfg.target);
+  $('tgt').textContent='Target '+cfg.target+'% · leak budget for a full '+cfg.shiftHrs+' hr shift: '+Math.round((1-T)*planned/60)+' min · meetings count as productive';
+  AUX.forEach(a=>{
+    const used=s.u[a.id],on=act&&act.aux===a.id;
+    if(a.type==='extra'){$('xUsed').textContent=fmt(used);$('xBtn').textContent=on?'Stop extra time':'Start extra time';$('xBtn').className=on?'stop':'';return}
+    const t=$('t-'+a.id);
+    if(a.type==='approved'){
+      const rem=a.allow*60-used;
+      t.textContent=rem>=0?fmt(rem)+' left':fmt(-rem)+' over';t.className='t'+(rem<0?' over':'');
+      const p=$('p-'+a.id);p.style.width=Math.min(100,used/(a.allow*60)*100)+'%';p.className=rem<0?'over':'';
+    }else{t.textContent=fmt(used)+' used'}
+    $('c-'+a.id).classList.toggle('on',!!on);
+    $('b-'+a.id).textContent=on?'Stop':'Start';
+    $('b-'+a.id).className=on?'stop':'';
+  });
+  const b=$('banner');b.classList.toggle('hide',!act);
+  if(act){
+    const a=AUX.find(x=>x.id===act.aux),el=(Date.now()-act.s)/1000;
+    $('bName').textContent=a.name+(act.note?' – '+act.note:'');
+    let txt=fmt(el),isOver=!!a.leak;
+    if(a.type==='approved'){const rem=a.allow*60-s.u[a.id];txt+=' · '+(rem>=0?fmt(rem)+' left':fmt(-rem)+' over');isOver=rem<0}
+    $('bTime').textContent=txt;b.classList.toggle('over',isOver);
+  }
+}
+function renderLog(){
+  const d=db.days[dk()],ss=d?d.sessions:[];
+  $('log').innerHTML=ss.length?[...ss].reverse().map(x=>{
+    const a=AUX.find(y=>y.id===x.aux);
+    const t=n=>new Date(n).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
+    return `<li><span>${esc(a?a.name:x.aux)}${x.note?' – '+esc(x.note):''}<br><span class="mu">${t(x.s)}–${t(x.e)}</span></span><span>${fmt((x.e-x.s)/1000)} <button data-del="${x.id}" aria-label="Delete entry">✕</button></span></li>`}).join(''):'<li class="mu">Nothing logged yet. Tap Start on an aux when you step away.</li>';
+}
+$('log').onclick=e=>{const id=e.target.dataset.del;if(!id)return;const d=db.days[dk()];d.sessions=d.sessions.filter(x=>String(x.id)!==id);save([dk()]);renderLog();tick()};
+
+/* history */
+function renderHist(){
+  const cfg=db.cfg,n=+$('range').value,cut=n>=9999?0:Date.now()-n*864e5;
+  const keys=Object.keys(db.days).filter(k=>new Date(k+'T23:59:59')>=cut).sort();
+  const rows=keys.map(k=>({k,...stats(k,true)})).filter(r=>r.shift>0||Object.values(r.u).some(v=>v>0));
+  const pct=v=>v===null?'–':v.toFixed(1)+'%';
+  const hit=r=>r.util!==null&&r.util>=cfg.target;
+  const sA=rows.reduce((t,r)=>t+r.avail,0),sP=rows.reduce((t,r)=>t+r.prod,0),sL=rows.reduce((t,r)=>t+r.leak,0);
+  const counted=rows.filter(r=>r.util!==null);
+  $('summary').textContent=counted.length?`Period utilisation ${pct(sA?sP/sA*100:null)} (target ${cfg.target}%) · on target ${counted.filter(hit).length} of ${counted.length} days · average leak ${fmt(sL/counted.length)} per day`:'No completed shift data yet.';
+  $('chart').innerHTML=rows.length?rows.map(r=>`<div class="col" title="${r.k}: ${pct(r.util)}"><i class="${hit(r)?'ok':'low'}" style="height:${Math.min(100,r.util||0)*0.9}px"></i><span>${r.k.slice(8)}</span></div>`).join(''):'<span class="mu">No days saved yet.</span>';
+  const D=rows.length||1;
+  $('auxTbl').innerHTML='<tr><th>Aux</th><th>Total</th><th>Avg/day</th><th>Days over</th><th>Leak</th></tr>'+AUX.map(a=>{
+    const tot=rows.reduce((t,r)=>t+r.u[a.id],0);
+    const lk=rows.reduce((t,r)=>t+leakOf(a,r.c[a.id]),0);
+    const ov=a.type==='approved'?rows.filter(r=>r.u[a.id]>a.allow*60).length:(a.type==='extra'?rows.filter(r=>r.u[a.id]>0).length:'–');
+    return `<tr><td>${a.name}</td><td>${fmt(tot)}</td><td>${fmt(tot/D)}</td><td class="${ov>0?'bad':''}">${ov}</td><td class="${lk>0?'bad':''}">${a.out||a.id==='meet'?'–':fmt(lk)}</td></tr>`}).join('');
+  $('dayTbl').innerHTML='<tr><th>Date</th><th>Shift</th><th>Leak</th><th>Util</th><th>Target</th></tr>'+[...rows].reverse().map(r=>
+    `<tr><td>${r.k}</td><td>${fmt(r.shift)}</td><td class="${r.util!==null&&!hit(r)?'bad':''}">${fmt(r.leak)}</td><td>${pct(r.util)}</td><td>${r.util===null?'–':(hit(r)?'✓':'✗')}</td></tr>`).join('');
+}
+$('range').onchange=renderHist;
+const cfgChange=()=>{
+  const t=+$('cfgT').value,h=+$('cfgS').value;
+  if(t>=1&&t<=100)db.cfg.target=t;
+  if(h>=1&&h<=16)db.cfg.shiftHrs=h;
+  save([],true);renderHist();tick();
+};
+$('cfgT').onchange=cfgChange;$('cfgS').onchange=cfgChange;
+$('keep').onchange=()=>{db.keep=+$('keep').value;save(prune(),true);renderHist()};
+$('csv').onclick=()=>{
+  const head=['date','shift_min','available_min','leak_min','productive_min','utilisation_pct','target_met',...AUX.map(a=>a.id+'_min')];
+  const lines=Object.keys(db.days).sort().map(k=>{const s=stats(k,true);return[k,mins(s.shift),mins(s.avail),mins(s.leak),mins(s.prod),s.util===null?'':s.util.toFixed(1),s.util===null?'':(s.util>=db.cfg.target?'yes':'no'),...AUX.map(a=>mins(s.u[a.id]))].join(',')});
+  const notes=Object.keys(db.days).sort().flatMap(k=>db.days[k].sessions.filter(x=>x.note).map(x=>`${k},"${x.note.replace(/"/g,'""')}",${mins((x.e-x.s)/1000)}`));
+  const csv=[head.join(','),...lines,'','date,extra_time_reason,minutes',...notes].join('\n');
+  const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));a.download='shift-aux-history.csv';a.click();
+};
+$('wipe').onclick=()=>{if(confirm('Delete all saved days? This cannot be undone.')){const ks=Object.keys(db.days);db.days={};db.active=null;save(ks,true);renderLog();renderHist();tick()}};
+
+/* ---- cloud sync: Cloudflare Worker + D1, one row per day, polled every 15s while visible ---- */
+let enabled=false,dirty=new Map(),tm=null,pollT=null,since=0,first=true,remoteKeys=new Set();
+const getCode=()=>localStorage.getItem(KEY+'.code')||'';
+function setStatus(t,bad){$('sync').textContent=t;$('sync').classList.toggle('bad',!!bad)}
+function mark(k){dirty.set(k,(dirty.get(k)||0)+1)}
+$('sync').onclick=()=>tab(true);
+const url=(code,extra='')=>`${SYNC_URL}/sync?code=${encodeURIComponent(code)}${extra}`;
+
+async function flush(){
+  if(!enabled||!dirty.size)return;
+  const code=getCode(),sent=[...dirty];
+  const rows=sent.map(([key,n])=>({key,n,value:key==='meta'?{active:db.active,keep:db.keep,cfg:db.cfg}:(db.days[key.slice(4)]||null)}));
+  try{
+    for(let i=0;i<rows.length;i+=50){
+      conextra')$('note').value='';
   save([k],true);renderLog();tick();
 }
 function toggle(id){db.active&&db.active.aux===id?stopAux():startAux(id)}
